@@ -6,21 +6,19 @@ Raspberry Pi Pico W version using correct aioble patterns
 import sys
 sys.path.append("")
 
-from micropython import const
 import asyncio
 import aioble
 import bluetooth
 import struct
 import ubinascii
 import gc
-import time
+from machine import Pin
 
 # Configuration
 TARGET_NAME = "34660-5"  # Set your device name here
 SCAN_TIMEOUT = 10000      # milliseconds
 RETRY_DELAY = 5000        # Reduced retry delay for faster reconnection
-CONNECTION_CHECK_INTERVAL = 2000  # milliseconds
-HEARTBEAT_TIMEOUT = 10000  # milliseconds - consider disconnected if no data for this long
+LED_PIN = "LED"
 
 # Target Service and characteristic UUIDs
 TARGET_RADAR_SERVICE = bluetooth.UUID('f3641400-00b0-4240-ba50-05ca45bf8abc')
@@ -53,10 +51,13 @@ _ADV_INTERVAL_MS = 250_000
 current_radar_data = bytearray()
 current_battery_level = 0
 source_connection = None
-connected_to_source = False
 running = True
-last_data_time = 0  # Track when we last received data
 connection_state = "scanning"  # "scanning", "connected", "disconnected"
+led_blink_interval = 0.5
+led_blink_event = asyncio.Event()
+
+#Initialize LED
+led = Pin(LED_PIN, Pin.OUT)
 
 # Register GATT server (global scope like the example)
 radar_service = aioble.Service(TARGET_RADAR_SERVICE)
@@ -88,18 +89,17 @@ def _encode_battery_level(level):
 def update_connection_state(new_state):
     """Update connection state with logging"""
     global connection_state
+    global led_blink_interval
     if connection_state != new_state:
         connection_state = new_state
+        if new_state == "scanning":
+            led_blink_interval = 0.5  
+        elif new_state == "connected":
+            led_blink_interval = 1
+        elif new_state == "disconnected":
+            led_blink_interval = 2.5
 
-def is_connection_alive():
-    """Check if connection is still alive based on recent data"""
-    global last_data_time
-    if last_data_time == 0:
-        return True  # No data received yet, assume alive
-    
-    current_time = time.ticks_ms()
-    time_since_data = time.ticks_diff(current_time, last_data_time)
-    return time_since_data < HEARTBEAT_TIMEOUT
+        led_blink_event.set()
 
 async def scan_for_device():
     """Scan for target device"""
@@ -126,7 +126,7 @@ async def scan_for_device():
 
 async def connect_to_source(device):
     """Connect to source device with enhanced error handling"""
-    global source_connection, connected_to_source, last_data_time
+    global source_connection
     
     print(f"Connecting to: {device}")
     
@@ -135,8 +135,6 @@ async def connect_to_source(device):
         await disconnect_source()
         
         source_connection = await device.connect()
-        connected_to_source = True
-        last_data_time = time.ticks_ms()  # Reset heartbeat timer
         update_connection_state("connected")
         print(f"Connected to source device: {device}")
         return True
@@ -271,12 +269,9 @@ async def setup_notifications():
 
 async def handle_radar_notification(data):
     """Handle radar data notifications"""
-    global current_radar_data, last_data_time
+    global current_radar_data
     
     try:
-        # Update heartbeat timer
-        last_data_time = time.ticks_ms()
-        
         # Validate radar frame - check if byte at position 3 is 0x30 or 0x31
         if len(data) >= 4 and (data[3] == 0x30 or data[3] == 0x31):
             # Cut the first 3 bytes and forward the rest
@@ -297,12 +292,9 @@ async def handle_radar_notification(data):
 
 async def handle_battery_notification(data):
     """Handle battery level notifications"""
-    global current_battery_level, last_data_time
+    global current_battery_level
     
     try:
-        # Update heartbeat timer
-        last_data_time = time.ticks_ms()
-        
         if len(data) == 1:
             battery_level = data[0]
             if battery_level != current_battery_level:
@@ -315,49 +307,32 @@ async def handle_battery_notification(data):
     except Exception as e:
         print(f"Error handling battery notification: {e}")
 
-async def monitor_connection_health():
-    """Monitor connection health and detect silent disconnections"""
-    global connected_to_source
-    
-    while connected_to_source and running:
-        try:
-            if not is_connection_alive():
-                print("Connection appears dead (no data received), forcing disconnect")
-                connected_to_source = False
-                break
-                
-            await asyncio.sleep_ms(CONNECTION_CHECK_INTERVAL)
-            
-        except Exception as e:
-            print(f"Error in connection health monitor: {e}")
-            break
-
 async def source_device_task():
     """Handle connection to source radar device and data forwarding"""
-    global source_connection, connected_to_source, running
-    
+    global source_connection, running, connection_state
     
     while running:
         try:
-            
-            # Scan for device
-            device = await scan_for_device()
-            if not device:
-                print(f"Device not found, retrying in {RETRY_DELAY//1000} seconds...")
-                await asyncio.sleep_ms(RETRY_DELAY)
-                continue
+            device = None
+            while (not device): 
+                device = await scan_for_device()
+                if not device:
+                    print(f"Device not found, retrying in {RETRY_DELAY//1000} seconds...")
+                    await asyncio.sleep_ms(RETRY_DELAY)
+
                 
             # Connect to source
-            if not await connect_to_source(device):
-                print(f"Connection failed, retrying in {RETRY_DELAY//1000} seconds...")
-                await asyncio.sleep_ms(RETRY_DELAY)
-                continue
+            connected = False
+            while not connected:
+                connected = await connect_to_source(device)
+                if not connected:
+                    print(f"Connection failed, retrying in {RETRY_DELAY//1000} seconds...")
+                    await asyncio.sleep_ms(RETRY_DELAY)
                 
             # Validate device
             if not await validate_device():
                 print("Device validation failed")
                 await disconnect_source()
-                await asyncio.sleep_ms(RETRY_DELAY)
                 continue
                 
             # Setup notifications
@@ -365,20 +340,16 @@ async def source_device_task():
             if not radar_char or not battery_char:
                 print("Failed to setup notifications")
                 await disconnect_source()
-                await asyncio.sleep_ms(RETRY_DELAY)
                 continue
             
             print("Source device operational - monitoring notifications...")
             
-            # Create connection health monitor task
-            health_monitor_task = asyncio.create_task(monitor_connection_health())
-            
             # Monitor notifications with enhanced error handling
             try:
-                while connected_to_source and running:
+                while source_connection and source_connection.is_connected() and running:
                     try:
                         # Check for radar data
-                        if radar_char and connected_to_source:
+                        if radar_char and source_connection and source_connection.is_connected():
                             try:
                                 radar_data = await asyncio.wait_for(
                                     radar_char.notified(), 
@@ -389,13 +360,12 @@ async def source_device_task():
                                 pass
                             except (aioble.DeviceDisconnectedError, OSError) as e:
                                 print(f"Radar characteristic disconnected: {e}")
-                                connected_to_source = False
                                 break
                             except Exception as e:
                                 print(f"Radar notification error: {e}")
                         
                         # Check for battery data
-                        if battery_char and connected_to_source:
+                        if battery_char and source_connection and source_connection.is_connected():
                             try:
                                 battery_data = await asyncio.wait_for(
                                     battery_char.notified(), 
@@ -406,7 +376,6 @@ async def source_device_task():
                                 pass
                             except (aioble.DeviceDisconnectedError, OSError) as e:
                                 print(f"Battery characteristic disconnected: {e}")
-                                connected_to_source = False
                                 break
                             except Exception as e:
                                 print(f"Battery notification error: {e}")
@@ -415,26 +384,15 @@ async def source_device_task():
                         
                     except (aioble.DeviceDisconnectedError, OSError) as e:
                         print(f"Source device disconnected: {e}")
-                        connected_to_source = False
                         break
                     except Exception as e:
                         print(f"Unexpected error in notification loop: {e}")
-                        connected_to_source = False
                         break
                         
             except Exception as e:
                 print(f"Error in notification monitoring: {e}")
-            finally:
-                # Cancel health monitor task
-                if not health_monitor_task.done():
-                    health_monitor_task.cancel()
-                    try:
-                        await health_monitor_task
-                    except asyncio.CancelledError:
-                        pass
             
             print("Source connection lost, falling back to scanning mode...")
-            update_connection_state("disconnected")
             
         except Exception as e:
             print(f"Error in source device task: {e}")
@@ -445,15 +403,14 @@ async def source_device_task():
 
 async def disconnect_source():
     """Disconnect from source device with enhanced cleanup"""
-    global source_connection, connected_to_source, last_data_time
-    
-    connected_to_source = False
-    last_data_time = 0
+    global source_connection
     
     if source_connection:
         try:
             print("Cleaning up...")
             await source_connection.disconnect()
+            radar_characteristic.write(b'', send_update=True) 
+            battery_characteristic.write(b'', send_update=True)
         except Exception as e:
             print(f"Error during disconnect cleanup: {e}")
         finally:
@@ -473,7 +430,7 @@ async def peripheral_task():
             
             async with await aioble.advertise(
                 _ADV_INTERVAL_MS,
-                name="Radar",
+                name="RadarProxy",
                 services=[TARGET_RADAR_SERVICE],
             ) as connection:
                 print(f"Client connected: {connection.device}")
@@ -486,10 +443,22 @@ async def peripheral_task():
             print(f"Error in peripheral task: {e}")
             await asyncio.sleep_ms(1000)
 
+async def led_blink_task():
+    global led_blink_interval
+    while True:
+        led.on()
+        await asyncio.sleep(0.2)
+        led.off()
+        try:
+            await asyncio.wait_for(led_blink_event.wait(), timeout=led_blink_interval)
+            led_blink_event.clear()
+        except asyncio.TimeoutError:
+            pass  # Timeout means no state change; just blink again
+
 async def main():
     """Main function - run both tasks concurrently"""
     print("Starting BLE Radar Proxy with Enhanced Disconnect Handling...")
-    
+
     # Initialize characteristics
     radar_characteristic.write(b'')
     battery_characteristic.write(_encode_battery_level(0))
@@ -497,10 +466,11 @@ async def main():
     # Create tasks for source device handling and peripheral advertising
     t1 = asyncio.create_task(source_device_task())
     t2 = asyncio.create_task(peripheral_task())
+    t3 = asyncio.create_task(led_blink_task())
     
     try:
         # Run both tasks concurrently
-        await asyncio.gather(t1, t2)
+        await asyncio.gather(t1, t2, t3)
     except KeyboardInterrupt:
         print("Proxy stopped by user")
     finally:
