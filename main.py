@@ -293,7 +293,7 @@ async def handle_radar_notification(data):
            
             if processed_data[0] == 0x30:
                 radar_data_page1_timer.deinit()
-                current_radar_data_page2 = processed_data
+                current_radar_data_page1 = processed_data
                 radar_data_page1_timer.init(mode=Timer.ONE_SHOT, period=RADAR_DATA_PAGE_TIMEOUT, callback=lambda t: clear_radar_data_page(1))
                 
             elif processed_data[0] == 0x31:
