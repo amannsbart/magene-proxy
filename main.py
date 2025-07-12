@@ -12,12 +12,13 @@ import bluetooth
 import struct
 import ubinascii
 import gc
-from machine import Pin
+from machine import Pin, Timer
 
 # Configuration
-TARGET_NAME = "34660-5"  # Set your device name here
-SCAN_TIMEOUT = 10000      # milliseconds
-RETRY_DELAY = 5000        # Reduced retry delay for faster reconnection
+TARGET_NAME = "34660-5"  
+SCAN_TIMEOUT = 10000      
+RETRY_DELAY = 5000        
+RADAR_DATA_PAGE_TIMEOUT = 2000
 LED_PIN = "LED"
 
 # Target Service and characteristic UUIDs
@@ -48,7 +49,10 @@ EXPECTED_MODEL = '320'
 _ADV_INTERVAL_MS = 250_000
 
 # Global state variables
-current_radar_data = bytearray()
+current_radar_data_page1 = bytearray([0x30,00,00,00,00,00,00,00])
+current_radar_data_page2 = bytearray([0x31,00,00,00,00,00,00,00])
+radar_data_page1_timer = Timer(-1)
+radar_data_page2_timer = Timer(-1)
 current_battery_level = 0
 source_connection = None
 running = True
@@ -81,7 +85,17 @@ aioble.register_services(radar_service, battery_service)
 
 print("BLE peripheral services registered")
 
-# Helper functions for data encoding
+# Helper functions
+def clear_radar_data_page(number: int):
+    global current_radar_data_page1, current_radar_data_page2
+    """Clear radar data page"""
+    if number == 1:
+        current_radar_data_page1 = bytearray([0x30,00,00,00,00,00,00,00])
+    elif number == 2:
+        current_radar_data_page2 = bytearray([0x31,00,00,00,00,00,00,00])
+    return 
+
+
 def _encode_battery_level(level):
     """Encode battery level as single byte"""
     return struct.pack('B', level)
@@ -269,21 +283,25 @@ async def setup_notifications():
 
 async def handle_radar_notification(data):
     """Handle radar data notifications"""
-    global current_radar_data
+    global current_radar_data_page1, current_radar_data_page2, radar_data_page1_timer, radar_data_page2_timer 
     
     try:
         # Validate radar frame - check if byte at position 3 is 0x30 or 0x31
         if len(data) >= 4 and (data[3] == 0x30 or data[3] == 0x31):
             # Cut the first 3 bytes and forward the rest
             processed_data = bytearray(data[3:])
-
+           
             if processed_data[0] == 0x30:
-                processed_data[0] = 0x01
+                radar_data_page1_timer.deinit()
+                current_radar_data_page2 = processed_data
+                radar_data_page1_timer.init(mode=Timer.ONE_SHOT, period=RADAR_DATA_PAGE_TIMEOUT, callback=lambda t: clear_radar_data_page(1))
+                
             elif processed_data[0] == 0x31:
-                processed_data[0] = 0x02
+                radar_data_page1_timer.deinit()
+                current_radar_data_page2 = processed_data
+                radar_data_page2_timer.init(mode=Timer.ONE_SHOT, period=RADAR_DATA_PAGE_TIMEOUT, callback=lambda t: clear_radar_data_page(2))
             
-            current_radar_data = processed_data
-            radar_characteristic.write(current_radar_data, send_update=True)
+            radar_characteristic.write(current_radar_data_page1 + current_radar_data_page2, send_update=True)
         else:
             print(f"Non-radar frame received (length: {len(data)}): {ubinascii.hexlify(data).decode()}")
             
@@ -423,10 +441,6 @@ async def peripheral_task():
     while running:
         try:
             print("Starting BLE peripheral advertising...")
-            
-            # Initialize characteristics with current values
-            radar_characteristic.write(current_radar_data or b'')
-            battery_characteristic.write(_encode_battery_level(current_battery_level))
             
             async with await aioble.advertise(
                 _ADV_INTERVAL_MS,
