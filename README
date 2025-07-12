@@ -1,0 +1,52 @@
+# BLE Radar Proxy for Raspberry Pi Pico W
+
+A Bluetooth Low Energy (BLE) proxy that masks a Magene L508 rear bike radar as a different radar device with alternative Bluetooth implementation. This allows compatibility with cycling computers and apps that may not natively support the Magene L508's proprietary BLE protocol.
+
+## Overview
+
+This proxy acts as a BLE bridge, connecting to a Magene L508 radar device and re-advertising its data using a the radar protocol of the Bryton Gardia. The Raspberry Pi Pico W serves as an intermediary, translating between the Magene's proprietary format and a more universally compatible BLE radar implementation.
+
+## Hardware Requirements
+
+- Raspberry Pi Pico W
+- Magene L508 Rear Bike Radar
+- MicroPython firmware installed on the Pico W
+
+## Software Dependencies
+
+- MicroPython with `aioble` library
+- Standard MicroPython libraries: `asyncio`, `bluetooth`, `struct`, `ubinascii`
+
+## Configuration
+
+Before running the proxy, update the following configuration parameters in the code:
+
+```python
+TARGET_NAME = "34660-5" # Set your Magene device name here
+SCAN_TIMEOUT = 10000 # Scan timeout in milliseconds
+RETRY_DELAY = 5000 # Reconnection delay in milliseconds
+HEARTBEAT_TIMEOUT = 10000 # Connection health timeout
+```
+
+## Installation
+
+1. **Flash Customized MicroPython Firmware**:  
+   The default MicroPython firmware for the Pico W has restrictive limits on the number of simultaneous GATT clients and HCI connections. For operation as a BLE proxy, a customized firmware build with increased connection limits is needed.
+
+   - Adjust the following settings in your MicroPython build configuration before compiling:
+     - Increase the maximum number of GATT client connections (e.g., `MAX_NR_HCI_CONNECTIONS`)
+     - Increase the maximum number of HCI connections if required (e.g., `MAX_NR_GATT_CLIENTS`)
+   - Build and flash this customized firmware to your Raspberry Pi Pico W.
+   - Refer to the MicroPython documentation and your BLE stack's configuration guide for details on modifying these parameters.
+
+2. **Upload Code**: Copy the proxy script to your Pico W as `main.py`.
+
+3. **Configure Device**: Update the `TARGET_NAME` in the configuration section.
+
+4. **Power On**: Connect the Pico W to power - it will start automatically.
+
+## License
+
+This project is provided as-is for educational and personal use under the GPL v3 License. Please ensure compliance with local regulations regarding BLE device modification and cycling safety equipment.
+
+Happy riding!
