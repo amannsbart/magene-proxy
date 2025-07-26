@@ -1,0 +1,79 @@
+[package]
+name = "magene-proxy"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+
+[[bin]]
+name = "magene-proxy"
+path = "./src/bin/main.rs"
+
+[dependencies]
+esp-hal = { version = "=1.0.0-rc.0", features = [
+    "esp32s3",
+    "unstable",
+    "log-04",
+] }
+esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32s3"] }
+log = "0.4.27"
+
+esp-println = { version = "0.15.0", features = ["esp32s3", "log-04"] }
+esp-backtrace = { version = "0.17.0", features = [
+    "esp32s3",
+    "exception-handler",
+    "panic-handler",
+    "println",
+] }
+esp-alloc = "0.8.0"
+embedded-io = "0.6.1"
+embedded-io-async = "0.6.1"
+esp-wifi = { version = "0.15.0", features = [
+    "builtin-scheduler",
+    "esp32s3",
+    "ble",
+    "esp-alloc",
+    "log-04",
+] }
+trouble-host = { version = "0.2.4", features = [
+    "scan",
+    "gatt-client-notification-max-subscribers-8",
+    "connection-event-queue-size-16",
+    "l2cap-tx-queue-size-32",
+    "l2cap-rx-queue-size-32",
+    "default-packet-pool-size-64",
+    "log",
+    "gatt",
+] }
+bt-hci = { version = "0.3.2", features = [] }
+embassy-executor = { version = "0.7.0", features = [
+    "task-arena-size-20480",
+    "log",
+] }
+embassy-time = { version = "0.4.0", features = ["log"] }
+esp-hal-embassy = { version = "0.9.0", features = ["esp32s3", "log-04"] }
+static_cell = "2.1.1"
+critical-section = "1.2.0"
+embassy-sync = { version = "0.7.0", features = ["log"] }
+embassy-futures = { version = "0.1.1", features = ["log"] }
+heapless = "0.8.0"
+thiserror = { version = "2.0.12", default-features = false }
+smart-leds = "0.4.0"
+esp-hal-smartled = { version = "0.15.0", features = ["esp32s3"] }
+
+
+[profile.dev]
+# Rust debug is too slow.
+# For debug builds always builds with some optimization
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1        # LLVM can perform better optimizations using a single thread
+debug = 2
+debug-assertions = false
+incremental = false
+lto = 'fat'
+opt-level = 's'
+overflow-checks = false
+
+[patch.crates-io]
+esp-hal-smartled = { git = "https://github.com/esp-rs/esp-hal-community" }
