@@ -2,12 +2,11 @@
 runner = "espflash flash --monitor --chip esp32s3"
 
 [env]
-ESP_LOG="info"
+ESP_LOG = "info"
+ESP_WIFI_CONFIG_COUNTRY_CODE = "AT"
 
 [build]
-rustflags = [
-  "-C", "link-arg=-nostartfiles",
-]
+rustflags = ["-C", "link-arg=-nostartfiles"]
 
 target = "xtensa-esp32s3-none-elf"
 
