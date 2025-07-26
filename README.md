@@ -31,6 +31,7 @@ This proxy acts as a BLE bridge, connecting to a Magene L508 radar device and re
     ```
 
 3. **Connect ESP32-S3 development board**
+    
     Make sure that you have sufficient permissions for the usb serial device (udev rule, etc.)
 
 
