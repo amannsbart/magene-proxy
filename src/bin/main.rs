@@ -7,6 +7,8 @@
 )]
 
 use embassy_futures::select::{select4, Either4};
+
+use embassy_time::Timer;
 use magene_proxy::bluetooth::{ble_manager_task, ScanEventHandler};
 use magene_proxy::config::{Server, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX};
 use magene_proxy::led::led_task;
@@ -14,7 +16,10 @@ use magene_proxy::led::led_task;
 use bt_hci::{controller::ExternalController, uuid::appearance};
 
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::WakeEvent;
 use esp_hal::gpio::{Input, InputConfig, Pull};
+use esp_hal::rtc_cntl::{sleep::GpioWakeupSource, Rtc};
+use esp_hal::system::software_reset;
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::{rmt::Rmt, time::Rate};
@@ -44,12 +49,14 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
-
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::_80MHz);
     let peripherals = esp_hal::init(config);
 
     let input_config = InputConfig::default().with_pull(Pull::Up);
     let mut user_button = Input::new(peripherals.GPIO41, input_config);
+    user_button
+        .wakeup_enable(true, WakeEvent::LowLevel)
+        .expect("[Main] Failed to initialize user button wakeup");
 
     let mut led = {
         let frequency = Rate::from_mhz(80);
@@ -58,11 +65,18 @@ async fn main(_spawner: Spawner) {
     };
 
     esp_alloc::heap_allocator!(size: 64 * 1024);
-
     let timer0 = SystemTimer::new(peripherals.SYSTIMER);
     esp_hal_embassy::init(timer0.alarm0);
     let rng = esp_hal::rng::Rng::new(peripherals.RNG);
     let timer1 = TimerGroup::new(peripherals.TIMG0);
+
+    let mut rtc = Rtc::new(peripherals.LPWR);
+    let wakeup_source = GpioWakeupSource::new();
+
+    Timer::after_secs(1).await;
+    rtc.sleep_light(&[&wakeup_source]);
+    Timer::after_secs(1).await;
+
     let wifi_init = esp_wifi::init(timer1.timer0, rng)
         .expect("[Main] Failed to initialize WIFI/BLE controller");
 
@@ -84,39 +98,38 @@ async fn main(_spawner: Spawner) {
             return;
         }
     };
-    info!("[Main] Setup complete....");
-    loop {
-        user_button.wait_for_falling_edge().await;
-        info!("[Main] Starting main application");
-        let Host {
-            mut runner,
-            central,
-            mut peripheral,
-            ..
-        } = stack.build();
 
-        match select4(
-            runner.run_with_handler(&ScanEventHandler),
-            led_task(&mut led),
-            ble_manager_task(central, &stack, &server, &mut peripheral),
-            user_button.wait_for_falling_edge(),
-        )
-        .await
-        {
-            Either4::First(result) => match result {
-                Ok(()) => info!("[Main] Runner Task ended."),
-                Err(e) => error!("[Main] Runner task encounterd an error: {:?}", e),
-            },
-            Either4::Second(_) => {
-                info!("[Main] Led Task ended.")
-            }
-            Either4::Third(_) => {
-                info!("[Main] BLE Manager Task ended.")
-            }
-            Either4::Fourth(_) => {
-                info!("[Main] User button pressed")
-            }
-        };
-        info!("[Main] Stopping main application - byebye");
-    }
+    let Host {
+        mut runner,
+        central,
+        mut peripheral,
+        ..
+    } = stack.build();
+
+    info!("[Main] Setup complete.");
+
+    match select4(
+        runner.run_with_handler(&ScanEventHandler),
+        led_task(&mut led),
+        ble_manager_task(central, &stack, &server, &mut peripheral),
+        user_button.wait_for_falling_edge(),
+    )
+    .await
+    {
+        Either4::First(result) => match result {
+            Ok(()) => info!("[Main] Runner Task ended."),
+            Err(e) => error!("[Main] Runner task encounterd an error: {:?}", e),
+        },
+        Either4::Second(_) => {
+            info!("[Main] Led Task ended.")
+        }
+        Either4::Third(_) => {
+            info!("[Main] BLE Manager Task ended.")
+        }
+        Either4::Fourth(_) => {
+            info!("[Main] User button pressed")
+        }
+    };
+    info!("[Main] Resetting main application - byebye");
+    software_reset();
 }

@@ -10,6 +10,35 @@ use smart_leds::{
 
 use crate::messages::{ClientState, SourceState, CLIENT_STATE_WATCH, SOURCE_STATE_WATCH};
 
+struct LedDropGuard<'a, TX, const BUFFER_SIZE: usize>
+where
+    TX: RawChannelAccess + TxChannelInternal + 'static,
+{
+    led: &'a mut SmartLedsAdapter<TX, BUFFER_SIZE>,
+}
+
+impl<'a, TX, const BUFFER_SIZE: usize> LedDropGuard<'a, TX, BUFFER_SIZE>
+where
+    TX: RawChannelAccess + TxChannelInternal + 'static,
+{
+    fn new(led: &'a mut SmartLedsAdapter<TX, BUFFER_SIZE>) -> Self {
+        Self { led }
+    }
+
+    fn led(&mut self) -> &mut SmartLedsAdapter<TX, BUFFER_SIZE> {
+        self.led
+    }
+}
+
+impl<'a, TX, const BUFFER_SIZE: usize> Drop for LedDropGuard<'a, TX, BUFFER_SIZE>
+where
+    TX: RawChannelAccess + TxChannelInternal + 'static,
+{
+    fn drop(&mut self) {
+        let _ = self.led.write(brightness([colors::BLACK].into_iter(), 0));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LEDPattern {
     client_state: ClientState,
@@ -31,6 +60,7 @@ impl LEDPattern {
     pub fn set_source_state(&mut self, source_state: SourceState) {
         self.source_state = source_state
     }
+
     pub fn get_color(&self) -> RGB<u8> {
         match self.client_state {
             ClientState::Connected => colors::AZURE,
@@ -56,10 +86,14 @@ impl LEDPattern {
         }
     }
 }
+
 pub async fn led_task<TX, const BUFFER_SIZE: usize>(led: &mut SmartLedsAdapter<TX, BUFFER_SIZE>)
 where
     TX: RawChannelAccess + TxChannelInternal + 'static,
 {
+    // Create the drop guard - this will automatically turn off LED when function exits
+    let mut led_guard = LedDropGuard::new(led);
+
     let mut current_pattern = LEDPattern::new();
     let mut client_receiver = CLIENT_STATE_WATCH
         .receiver()
@@ -86,10 +120,15 @@ where
             Either3::Third(_) => {
                 let color = current_pattern.get_color();
                 let brightness_level = current_pattern.get_level();
-                led.write(brightness([color].into_iter(), brightness_level))
+
+                led_guard
+                    .led()
+                    .write(brightness([color].into_iter(), brightness_level))
                     .unwrap();
                 Timer::after(Duration::from_millis(200)).await;
-                led.write(brightness([colors::BLACK].into_iter(), brightness_level))
+                led_guard
+                    .led()
+                    .write(brightness([colors::BLACK].into_iter(), brightness_level))
                     .unwrap();
             }
         }
