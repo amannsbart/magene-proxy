@@ -79,9 +79,9 @@ impl LEDPattern {
 
     pub fn get_level(&self) -> u8 {
         match self.source_state {
-            SourceState::Disconnected => 127,
-            SourceState::Scanning => 255,
-            SourceState::Connecting => 255,
+            SourceState::Disconnected => 31,
+            SourceState::Scanning => 31,
+            SourceState::Connecting => 31,
             SourceState::Connected => 31,
         }
     }
